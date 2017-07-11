@@ -1,0 +1,34 @@
+<?php
+namespace app\controllers;
+
+use yii\helpers\Url;
+use yii\web\Controller;
+use Yii;
+
+class SitebaseController extends Controller{
+	public function beforeAction($action)
+    {
+        // Yii::app()->cache->flush();
+        $route = $this->route;
+        $isIE = Yii::$app->request->headers->get('User-Agent');
+        if(strpos($isIE,"MSIE") || strpos($isIE,"rv:11.0"))
+        {
+          $this->redirect(Url::toRoute("/not/noie"));
+          return false;
+        }
+        $allow_url = ['site/login','site/index'];
+        if (in_array($route,$allow_url)) {
+            return true;
+        } else {
+
+            if (Yii::$app->user->isGuest) {
+                $this->redirect(Url::toRoute("/site/index",true));
+                return false;
+            } else {
+
+
+                return true;
+            }
+        }
+    }
+}

@@ -1,0 +1,258 @@
+<?php
+namespace app\modules\exam\controllers;
+
+
+use app\models\exam\Createpaper;
+use app\models\exam\Paper;
+use app\models\exam\Paperconfigure;
+use app\models\question\Questions;
+use common\commonFuc;
+use Yii;
+use app\controllers\BaseController;
+use app\models\system\TbcuitmoonDictionary;
+use app\models\teachplan\Examplan;
+use app\models\teachplan\Teachingclassmannage;
+use yii\base\Exception;
+use app\models\TbcuitmoonUser;
+
+class PaperController extends BaseController
+{
+
+    /**
+     * Rending Paper index
+     * @return string
+     */
+    public function actionIndex()
+    {
+        $m_dic = new TbcuitmoonDictionary();
+        $m_paper = new Paper();
+        $com = new commonFuc();
+        $Data = [];
+        $Param = Yii::$app->request->get();
+        $Data['term'] = $m_dic->getDictionaryList('学期');
+        $Data['ExamPlan'] = 0;
+        $Data['TermChoice'] = 0;
+        if (isset($Param['examPlan'])) {
+            $Data['TermChoice'] = $Param['term'];
+            $Data['ExamPlan'] = $Param['examPlan'];
+            $Where[Paper::tableName().'.ExamPlanBh'] = $Param['examPlan'];
+            // $Where['CreateUser'] = TbcuitmoonUser::find()->where(['CuitMoon_UserName'=>Yii::$app->session->get('UserName')])->asArray()->one()['CuitMoon_UserID'];
+            $List = $m_paper->find()
+            ->leftJoin(Examplan::tableName(),
+                    Examplan::tableName().'.ExamPlanBh='.
+                    Paper::tableName().'.ExamPlanBh')
+            ->orderBy("CreateTime DESC")
+            ->where($Where);
+            $CloneList = clone $List;
+            $Pages = $com->Tab($CloneList);
+            
+            $Data['pages'] = $Pages;
+            $Data['list'] = $List->limit($Pages->limit)->offset($Pages->offset)->all();
+        }
+        // } else {
+        //     $Data['TermChoice'] = 0;
+        //     $Data['ExamPlan'] = 0;
+        //     $Where['CreateUser'] = TbcuitmoonUser::find()->where(['CuitMoon_UserName'=>Yii::$app->session->get('UserName')])->asArray()->one()['CuitMoon_UserID'];
+        //     $List = $m_paper->find()->leftJoin(Examplan::tableName(),
+        //             Examplan::tableName().'.ExamPlanBh='.
+        //             Paper::tableName().'.ExamPlanBh')
+        //     ->orderBy("CreateTime DESC")
+        //     ->where($Where);
+        // }
+        return $this->render('index',$Data);
+    }
+
+
+    /**
+     * Get the current term exam plan(ajax)
+     * @return json
+     */
+    public function actionGetTeachPlan()
+    {
+        $m_teachPlan = new Examplan();
+
+        $Tmp = $m_teachPlan->find()->select(['ExamPlanBh','ExamPlanName'])
+            ->where([
+                'Term' => Yii::$app->request->get('term'),
+                'CourseID' => Yii::$app->session->get('courseCode'),
+            ])->asArray()->all();
+        echo json_encode($Tmp);
+    }
+
+
+    public function actionCreatePaper()
+    {
+        $com = new commonFuc();
+        $m_exam_plan = new Examplan();
+
+        $Id = Yii::$app->request->post('id');
+        $num = Yii::$app->request->post('Number');
+        $ExamPlanName = $m_exam_plan->findOne([
+            'ExamPlanBh' => $Id
+        ])->ExamPlanName;
+        for($i=0; $i<$num; $i++){
+            self::createPaper($Id, $ExamPlanName);
+        }
+        $com->JsonSuccess('生成成功');
+    }
+
+    public function actionView()
+    {
+        $m_create_paper = new Createpaper();
+        $m_dic = new TbcuitmoonDictionary();
+
+        $id = Yii::$app->request->get('id');
+        $course = (string)Yii::$app->session->get('courseCode');
+        $courseId = $m_dic->find()->select('CuitMoon_DictionaryName')->where(['CuitMoon_DictionaryCode'=>$course])->asArray()->one();
+        if ($id) {
+            $QuestionTypes = $m_create_paper->find()->select(['Memo'])
+                ->where([
+                    'PaperBh' => $id,
+                ])->groupBy(['Memo'])->asArray()->all();
+            foreach ($QuestionTypes as $item) {
+                $Tmp = $m_create_paper->find()->where([
+                    'PaperBh' => $id,
+                    'Memo' => $item['Memo'],
+                ])->all();
+                foreach ($Tmp as $value) {
+                    $TmpData = $value->question;
+                    $TmpData['Score'] = $value->TotalScore;
+                    $Tmp_Data[] = $TmpData;
+                }
+                $Data[$item['Memo']] = $Tmp_Data;
+                unset($Tmp_Data);
+            }
+
+            return $this->render('paper',[
+                'info' => $Data,
+                'type' => $courseId,
+            ]);
+        }
+    }
+
+
+    /**
+     * Paper generation
+     * @param $ExamPlanBh
+     * @return array
+     */
+    public function createPaper($ExamPlanBh,$ExamPlanName)
+    {
+        $m_paperConfig = new Paperconfigure();
+        $m_question = new Questions();
+        $com = new commonFuc();
+        $paperConfig = $m_paperConfig->find()->where([
+            'ExamPlanBh' => $ExamPlanBh,
+        ])->all();
+        if(count($paperConfig) != 0){
+            $paperId = $com->create_id();
+            $Data = Array();
+            foreach ($paperConfig as $value){
+                $stages = explode('|',$value->stage);
+                $or[] = 'or';
+                foreach ($stages as $Tmp){
+                    $or[] = "Stage=$Tmp";
+                }
+                //Random access to questions
+                $question = $m_question->find()->select(['QuestionBh'])
+                    ->where(['and',
+                        'Checked = 100001',
+                        'Difficulty ='.$value->difficulty.'',
+                        'QuestionType ='.$value->QuestionType.'',
+                        'CourseID ='.\Yii::$app->session->get('courseCode').'',
+                        $or
+                ])->orderBy('RAND()')->limit($value->QuestionTypeNumber)->all();
+                foreach ($question as $Tmp){
+                    $Data[] = [$paperId,$Tmp->QuestionBh,$value->EveryQuestionSocre,$value->QuestionType];
+                }
+                unset($or);
+            }
+            $db = Yii::$app->db;
+            $transaction = $db->beginTransaction();
+            try{
+                $db->createCommand()
+                    ->batchInsert('createpaper',['PaperBh','QuestionBh','TotalScore','Memo'],$Data)
+                    ->execute();
+                $db->createCommand()
+                    ->batchInsert('paper',['PaperBh','CreateTime','PaperName','Memo','ExamPlanBh'],[[
+                        $paperId,date('Y-m-d H:i:s'),$ExamPlanName.'-'.rand(10000,99999),'',$ExamPlanBh
+                    ]])
+                    ->execute();
+                $transaction->commit();
+                return ['error' => '0'];
+            }catch (Exception $e){
+                $transaction->rollBack();
+                return ['error' =>1 , 'msg' => '添加试卷失败'];
+            }
+        }else{
+            return [
+                'error' => '1',
+                'mad'  => '此考试计划未配置模板'
+            ];
+        }
+    }
+
+    public function actionCopy(){
+        $paper = new Paper();
+        $com = new commonFuc();
+        $ids = Yii::$app->request->get('ids');
+       // $flag=0;
+        foreach($ids as $id){
+            $data = $paper->find()->where(['PaperBh'=>$id])->asArray()->one();
+            $cre_paper = new createpaper();
+            $paperid=$com->create_id();
+            $dataT[] = [$paperid,date('Y-m-d H:i:s'),$data['PaperName'],$data['Memo'],$data['ExamPlanBh']];
+            $db = Yii::$app->db;
+            $Cid = $cre_paper->find()->where(['PaperBh'=>$id])->asArray()->all();
+            if(isset($Cid)){
+                foreach($Cid as $c_paperid){
+                        $Cdata = $cre_paper->find()->where(['Id' => $c_paperid['Id']])->asArray()->one();
+                        $c_data[] = [$paperid,$Cdata['QuestionBh'],$Cdata['TotalScore'],$Cdata['Memo']];
+                }
+            }
+            //echo json_encode($paperN);
+        }
+
+        $db->createCommand()
+            ->batchInsert('paper',['PaperBh','CreateTime','PaperName','Memo','ExamplanBh'],$dataT)->execute();
+        $db->createCommand()
+            ->batchInsert('createpaper',['PaperBh','QuestionBh','TotalScore','Memo'],$c_data)->execute();
+
+        echo json_encode("复制试卷成功");
+    }
+
+    /**
+     * 删除模板
+     * @return json
+     */
+    public function actionDelete()
+    {
+        $com = new commonFuc();
+        $m_paper = new Paper();
+
+        $ids = Yii::$app->request->get('ids');
+        json_encode($ids);
+        if (count($ids) > 0) {
+            foreach ($ids as $item) {
+                Paper::deleteAll(['PaperBh' => $item]);
+                createpaper::deleteAll(['PaperBh' => $item]);
+                // $Transaction = Yii::$app->db->beginTransaction();
+                // try {
+                    // $m_paper->deleteAll([
+                    //     'PaperBh' => $item
+                    //     'ExamPlanBh' => ''
+                    // ]);
+                    // $m_paper->deleteAll(['PaperBh' => $item]);
+                    // $Transaction->commit();
+                    
+                // } catch (Exception $e) {
+                    // $Transaction->rollBack();
+                    // $com->JsonFail('删除失败');
+                // }
+            }
+            $com->JsonSuccess('删除成功');
+        }
+    }
+
+
+}
